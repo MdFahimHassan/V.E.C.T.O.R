@@ -4,11 +4,17 @@ import subprocess
 import time
 import random
 from google import genai
+from google.genai import types
+from dotenv import load_dotenv # <--- Add this import
+
+# Load the secret .env file safely into local environment variables
+load_dotenv()
 
 # ==========================================
 # 🧠 CORE ENGINE CONFIGURATION
 # ==========================================
-API_KEY = "AQ.Ab8RN6JG-BeIuTadwma64jCohFm8i61YceV8Tovtqrmx_5fxUA"
+# Instead of hardcoding, Python pulls it directly from system memory
+API_KEY = os.getenv("GEMINI_API_KEY")
 
 try:
     client = genai.Client(api_key=API_KEY)
