@@ -1,112 +1,100 @@
-import speech_recognition as sr
-import os
-import subprocess
+import argparse
+import re
 import time
-import random
-from google import genai
-from google.genai import types
-from dotenv import load_dotenv # <--- Add this import
 
-# Load the secret .env file safely into local environment variables
-load_dotenv()
+import config
+import tools
+from brain import Brain
+from voice import Voice
 
-# ==========================================
-# 🧠 CORE ENGINE CONFIGURATION
-# ==========================================
-# Instead of hardcoding, Python pulls it directly from system memory
-API_KEY = os.getenv("GEMINI_API_KEY")
+EXIT_PHRASES = {"exit", "quit", "goodbye", "goodbye vector", "shut down", "shut down vector", "go to sleep"}
+WAKE_PATTERN = re.compile(r"^\W*(?:(?:hey|hi|hello|okay|ok)\W+)?(\w+)\W*(.*)$", re.IGNORECASE | re.DOTALL)
 
-try:
-    client = genai.Client(api_key=API_KEY)
-except Exception as e:
-    print(f"[System Error] Failed to initialize AI client: {e}")
-    client = None
 
-def listen_command():
-    recognizer = sr.Recognizer()
-    recognizer.energy_threshold = 4000
-    recognizer.dynamic_energy_threshold = True
-    
-    with sr.Microphone() as source:
-        print("\n[V.E.C.T.O.R.] System active. Listening...")
-        recognizer.adjust_for_ambient_noise(source, duration=2)
-        audio = recognizer.listen(source, phrase_time_limit=5)
+def is_exit(text: str) -> bool:
+    return re.sub(r"[^a-z ]", "", text.lower()).strip() in EXIT_PHRASES
+
+
+def split_wake_word(text: str) -> tuple[bool, str]:
+    match = WAKE_PATTERN.match(text)
+    if match and match.group(1).lower() in config.WAKE_WORDS:
+        return True, match.group(2).strip()
+    return False, text
+
+
+def next_command(ear, voice, follow_up_until: float, require_wake: bool):
+    now = time.monotonic()
+    in_follow_up = now < follow_up_until
+    audio = ear.record_utterance(max_wait=(follow_up_until - now) if in_follow_up else float("inf"))
+    if audio is None:
+        return None
+
+    text = ear.transcribe(audio)
+    if not text:
+        return None
+
+    heard, command = split_wake_word(text)
+    if heard and not command:
+        voice.speak(f"Yes, {config.USER_TITLE}?")
+        audio = ear.record_utterance(max_wait=config.WAIT_FOR_SPEECH_SECONDS)
+        return ear.transcribe(audio) if audio is not None else None
+    if heard or in_follow_up or not require_wake:
+        return command
+    print(f"[ignored] {text}")
+    return None
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="V.E.C.T.O.R. voice assistant")
+    parser.add_argument("--text", action="store_true", help="type commands instead of speaking")
+    parser.add_argument("--no-wake", action="store_true", help="treat all speech as commands")
+    parser.add_argument("--list-devices", action="store_true", help="list audio devices and exit")
+    args = parser.parse_args()
+
+    if args.list_devices:
+        import sounddevice as sd
+        print(sd.query_devices())
+        return
+
+    voice = Voice()
+    tools.init(voice)
+    brain = Brain()
+
+    ear = None
+    if not args.text:
+        from ear import Ear
+        ear = Ear(voice)
+        ear.calibrate()
+
+    voice.speak(f"Vector online, {config.USER_TITLE}.")
+    follow_up_until = 0.0
 
     try:
-        print("[V.E.C.T.O.R.] Parsing audio data...")
-        command = recognizer.recognize_google(audio)
-        return command.lower()
-    except sr.UnknownValueError:
-        return ""
-    except sr.RequestError:
-        return ""
-
-def query_ai_with_retry(prompt, max_retries=3):
-    """
-    Tries to connect to Google's brain. If a 503 occurs, it automatically 
-    backs off and retries before throwing an error.
-    """
-    delay = 2.0  # Base wait time in seconds
-    
-    for attempt in range(max_retries):
-        try:
-            response = client.models.generate_content(
-                model="gemini-3.5-flash",
-                contents=prompt
-            )
-            return response.text
-        except Exception as e:
-            # Check if the server is telling us it's overloaded
-            if "503" in str(e) or "UNAVAILABLE" in str(e):
-                if attempt < max_retries - 1:
-                    # Add random jitter so we don't hit the server at the exact same millisecond
-                    jitter = random.uniform(0.5, 1.5)
-                    total_sleep = (delay * (2 ** attempt)) + jitter
-                    print(f"[V.E.C.T.O.R.] Neural core busy. Retrying automatically in {total_sleep:.1f}s...")
-                    time.sleep(total_sleep)
-                    continue
-            
-            # If it's a different error or we ran out of retries, print failure
-            print(f"[V.E.C.T.O.R.] Connection dropped: {e}")
-            return None
-
-def execute_command(command):
-    print(f"-> Parsed Text: '{command}'")
-    
-    if "shutdown program" in command or "exit" in command:
-        print("[V.E.C.T.O.R.] Deactivating core engine. Goodbye, sir.")
-        return False
-        
-    elif "open notepad" in command:
-        print("[V.E.C.T.O.R.] Opening Notepad application, sir.")
-        subprocess.Popen(["notepad.exe"])
-        
-    elif "open chrome" in command:
-        print("[V.E.C.T.O.R.] Launching Google Chrome browser, sir.")
-        chrome_path = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
-        if os.path.exists(chrome_path):
-            subprocess.Popen([chrome_path])
-        else:
-            print("[V.E.C.T.O.R.] Error: Chrome path not found.")
-            
-    # 🧠 THE UPGRADED BRAIN FALLBACK
-    else:
-        if client:
-            print("[V.E.C.T.O.R.] Querying neural core networks...")
-            ai_response = query_ai_with_retry(command)
-            
-            if ai_response:
-                print(f"\n[V.E.C.T.O.R.]: {ai_response}\n")
+        while True:
+            if args.text:
+                text = input("you> ").strip()
             else:
-                print("[V.E.C.T.O.R.] Neural networks completely congested right now, sir. Try again shortly.")
-        else:
-            print("[V.E.C.T.O.R.] AI Core client offline.")
-            
-    return True
+                text = next_command(ear, voice, follow_up_until, require_wake=not args.no_wake)
+                if text is None:
+                    follow_up_until = 0.0
+                    continue
+            if not text:
+                continue
+            print(f"[YOU] {text}")
+
+            if is_exit(text):
+                voice.speak(f"Goodbye, {config.USER_TITLE}.")
+                break
+
+            started = time.monotonic()
+            reply = brain.ask(text)
+            print(f"[timing] thinking {time.monotonic() - started:.1f}s")
+
+            voice.speak(reply)
+            follow_up_until = time.monotonic() + config.FOLLOW_UP_SECONDS
+    except KeyboardInterrupt:
+        print("\nBye.")
+
 
 if __name__ == "__main__":
-    running = True
-    while running:
-        user_speech = listen_command()
-        if user_speech:
-            running = execute_command(user_speech)
+    main()
