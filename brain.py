@@ -24,6 +24,15 @@ class Brain:
                         timeout=config.REQUEST_TIMEOUT, max_retries=0)
         return {"label": label, "client": client, "model": model}
 
+    @staticmethod
+    def _tool_call_dict(call) -> dict:
+        data = {"id": call.id, "type": "function",
+                "function": {"name": call.function.name, "arguments": call.function.arguments}}
+        extra = (getattr(call, "model_extra", None) or {}).get("extra_content")
+        if extra:
+            data["extra_content"] = extra
+        return data
+
     def _system_prompt(self) -> str:
         facts = tools.load_facts()
         facts_text = "\n".join(f"- {f}" for f in facts) if facts else "(nothing saved yet)"
@@ -50,7 +59,7 @@ class Brain:
                     tools=tools.schemas(), tool_choice="auto", temperature=0.4,
                 )
             except OpenAIError as e:
-                print(f"[Brain] {p['label']} ({p['model']}) failed: {type(e).__name__}")
+                print(f"[Brain] {p['label']} ({p['model']}) failed: {type(e).__name__}: {e}")
                 last_error = e
         raise RuntimeError(f"All brains failed: {last_error}")
 
@@ -76,10 +85,7 @@ class Brain:
                 messages.append({
                     "role": "assistant",
                     "content": msg.content or "",
-                    "tool_calls": [{"id": c.id, "type": "function",
-                                    "function": {"name": c.function.name,
-                                                 "arguments": c.function.arguments}}
-                                   for c in msg.tool_calls],
+                    "tool_calls": [self._tool_call_dict(c) for c in msg.tool_calls],
                 })
                 for call in msg.tool_calls:
                     result = tools.run_tool(call.function.name, call.function.arguments)
