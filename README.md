@@ -71,8 +71,9 @@ Secrets and model choices live in `.env` (see `.env.example`). Behaviour is tune
 
 | Setting | Meaning |
 |---|---|
-| `BRAIN_BASE_URL`, `BRAIN_API_KEY`, `BRAIN_MODEL` | Primary model provider |
-| `FALLBACK_*` | Local fallback model (Ollama) |
+| `BRAIN_ORDER` | Which brains to try, in order (default `ollama,gemini,groq`) |
+| `GEMINI_API_KEY`, `GROQ_API_KEY` | Free cloud keys; a brain with no key is skipped |
+| `OLLAMA_MODEL` | Local model, no key needed |
 | `WHISPER_MODEL` | `base.en` is faster, `small.en` is more accurate |
 | `WAKE_WORDS` | Spellings accepted as the wake word |
 | `FOLLOW_UP_SECONDS` | How long it keeps listening after a reply |
@@ -114,3 +115,12 @@ Audio never leaves your machine. The transcribed text and tool results are sent 
 - [ ] Interrupt with "stop"
 - [ ] Dedicated "Hey Vector" wake-word model
 - [ ] More tools: screenshots, clipboard, Spotify, project launcher
+## Orb interface and Jarvis voice
+
+```
+pip install -r requirements.txt
+python get_voice.py        # downloads the Jarvis Piper voice into ./voices (~64 MB)
+python vector.py --ui      # floating particle orb, pops up on "Hey Vector"
+```
+
+Without `get_voice.py` Vector falls back to the Windows voice. `orb.html` can also be opened on its own for a demo.

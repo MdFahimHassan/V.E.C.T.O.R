@@ -5,6 +5,7 @@ import time
 import config
 import tools
 from brain import Brain
+from ui import Hub, open_orb
 from voice import Voice
 
 EXIT_PHRASES = {"exit", "quit", "goodbye", "goodbye vector", "shut down", "shut down vector", "go to sleep"}
@@ -22,7 +23,7 @@ def split_wake_word(text: str) -> tuple[bool, str]:
     return False, text
 
 
-def next_command(ear, voice, follow_up_until: float, require_wake: bool):
+def next_command(ear, voice, hub, follow_up_until: float, require_wake: bool):
     now = time.monotonic()
     in_follow_up = now < follow_up_until
     audio = ear.record_utterance(max_wait=(follow_up_until - now) if in_follow_up else float("inf"))
@@ -35,7 +36,9 @@ def next_command(ear, voice, follow_up_until: float, require_wake: bool):
 
     heard, command = split_wake_word(text)
     if heard and not command:
+        hub.emit(state="listening")
         voice.speak(f"Yes, {config.USER_TITLE}?")
+        hub.emit(state="listening", text=None)
         audio = ear.record_utterance(max_wait=config.WAIT_FOR_SPEECH_SECONDS)
         return ear.transcribe(audio) if audio is not None else None
     if heard or in_follow_up or not require_wake:
@@ -49,6 +52,7 @@ def main() -> None:
     parser.add_argument("--text", action="store_true", help="type commands instead of speaking")
     parser.add_argument("--no-wake", action="store_true", help="treat all speech as commands")
     parser.add_argument("--list-devices", action="store_true", help="list audio devices and exit")
+    parser.add_argument("--ui", action="store_true", help="show the animated orb")
     args = parser.parse_args()
 
     if args.list_devices:
@@ -56,7 +60,16 @@ def main() -> None:
         print(sd.query_devices())
         return
 
-    voice = Voice()
+    hub = Hub()
+    if args.ui:
+        hub.start_server()
+        open_orb(hub, lambda: run(args, hub))  # returns when the window is closed
+    else:
+        run(args, hub)
+
+
+def run(args, hub: Hub) -> None:
+    voice = Voice(hub)
     tools.init(voice)
     brain = Brain()
 
@@ -66,7 +79,9 @@ def main() -> None:
         ear = Ear(voice)
         ear.calibrate()
 
+    hub.emit(state="speaking")
     voice.speak(f"Vector online, {config.USER_TITLE}.")
+    hub.emit(state="idle")
     follow_up_until = 0.0
 
     try:
@@ -74,13 +89,15 @@ def main() -> None:
             if args.text:
                 text = input("you> ").strip()
             else:
-                text = next_command(ear, voice, follow_up_until, require_wake=not args.no_wake)
+                text = next_command(ear, voice, hub, follow_up_until, require_wake=not args.no_wake)
                 if text is None:
                     follow_up_until = 0.0
+                    hub.emit(state="idle")
                     continue
             if not text:
                 continue
             print(f"[YOU] {text}")
+            hub.emit(state="thinking", text=text, who="you")
 
             if is_exit(text):
                 voice.speak(f"Goodbye, {config.USER_TITLE}.")
@@ -92,8 +109,14 @@ def main() -> None:
 
             voice.speak(reply)
             follow_up_until = time.monotonic() + config.FOLLOW_UP_SECONDS
+            hub.emit(state="listening")  # follow-up window is open
     except KeyboardInterrupt:
         print("\nBye.")
+    finally:
+        hub.emit(state="idle")
+        if args.ui:
+            import os
+            os._exit(0)  # close the orb window with us
 
 
 if __name__ == "__main__":

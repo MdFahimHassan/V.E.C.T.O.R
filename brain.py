@@ -1,7 +1,7 @@
 import time
 from datetime import datetime
 
-from openai import OpenAI, OpenAIError
+from openai import APIConnectionError, OpenAI, OpenAIError, RateLimitError
 
 import config
 import tools
@@ -10,19 +10,21 @@ import tools
 class Brain:
     def __init__(self):
         self.providers = []
-        if config.BRAIN_API_KEY:
-            self.providers.append(self._make_provider("primary", config.BRAIN_BASE_URL,
-                                                      config.BRAIN_API_KEY, config.BRAIN_MODEL))
-        if config.FALLBACK_BASE_URL and config.FALLBACK_MODEL:
-            self.providers.append(self._make_provider("fallback", config.FALLBACK_BASE_URL,
-                                                      config.FALLBACK_API_KEY, config.FALLBACK_MODEL))
+        for name in config.BRAIN_ORDER:
+            cfg = config.PROVIDERS.get(name)
+            if not cfg or not cfg["api_key"] or not cfg["model"]:
+                if cfg is not None and name != "ollama":
+                    print(f"[Brain] {name}: no API key in .env, skipping")
+                continue
+            self.providers.append({
+                "label": name, "model": cfg["model"], "skip_until": 0.0,
+                "keep_extra": "googleapis" in cfg["base_url"],  # Gemini's thought signatures
+                "client": OpenAI(base_url=cfg["base_url"], api_key=cfg["api_key"],
+                                 timeout=cfg["timeout"], max_retries=0),
+            })
+        print("[Brain] order: " + " -> ".join(f"{p['label']} ({p['model']})" for p in self.providers))
         self.history: list[dict] = []
-
-    @staticmethod
-    def _make_provider(label, base_url, api_key, model):
-        client = OpenAI(base_url=base_url, api_key=api_key,
-                        timeout=config.REQUEST_TIMEOUT, max_retries=0)
-        return {"label": label, "client": client, "model": model}
+        self.last_provider = ""
 
     @staticmethod
     def _tool_call_dict(call) -> dict:
@@ -32,6 +34,16 @@ class Brain:
         if extra:
             data["extra_content"] = extra
         return data
+
+    @staticmethod
+    def _without_extra(messages: list[dict]) -> list[dict]:
+        cleaned = []
+        for m in messages:
+            if m.get("tool_calls"):
+                m = {**m, "tool_calls": [{k: v for k, v in c.items() if k != "extra_content"}
+                                         for c in m["tool_calls"]]}
+            cleaned.append(m)
+        return cleaned
 
     def _system_prompt(self) -> str:
         facts = tools.load_facts()
@@ -52,14 +64,31 @@ class Brain:
 
     def _chat(self, messages):
         last_error = None
-        for p in self.providers:
+        now = time.monotonic()
+        # providers that failed recently go to the back instead of costing a timeout every turn
+        ready = [p for p in self.providers if p["skip_until"] <= now]
+        resting = [p for p in self.providers if p["skip_until"] > now]
+        for p in ready + resting:
             try:
-                return p["client"].chat.completions.create(
-                    model=p["model"], messages=messages,
+                msgs = messages if p["keep_extra"] else self._without_extra(messages)
+                reply = p["client"].chat.completions.create(
+                    model=p["model"], messages=msgs,
                     tools=tools.schemas(), tool_choice="auto", temperature=0.4,
                 )
+                self.last_provider = p["label"]
+                return reply
             except OpenAIError as e:
-                print(f"[Brain] {p['label']} ({p['model']}) failed: {type(e).__name__}: {e}")
+                if isinstance(e, RateLimitError):
+                    retry = e.response.headers.get("retry-after") if getattr(e, "response", None) else None
+                    wait = float(retry) if retry and retry.replace(".", "", 1).isdigit() else config.QUOTA_COOLDOWN_SECONDS
+                    reason = "out of quota"
+                elif isinstance(e, APIConnectionError):
+                    wait, reason = config.OFFLINE_COOLDOWN_SECONDS, "not reachable"
+                else:
+                    wait, reason = 60, "error"
+                p["skip_until"] = time.monotonic() + wait
+                print(f"[Brain] {p['label']} ({p['model']}) {reason}, resting {wait / 60:.0f} min: "
+                      f"{type(e).__name__}: {str(e)[:200]}")
                 last_error = e
         raise RuntimeError(f"All brains failed: {last_error}")
 
@@ -76,7 +105,7 @@ class Brain:
             for _ in range(config.MAX_TOOL_ROUNDS):
                 started = time.monotonic()
                 msg = self._chat(messages).choices[0].message
-                print(f"[timing] brain call {time.monotonic() - started:.1f}s")
+                print(f"[timing] brain call {time.monotonic() - started:.1f}s via {self.last_provider}")
 
                 if not msg.tool_calls:
                     reply = (msg.content or "").strip()
