@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import inspect
+import itertools
 import json
 import os
 import subprocess
 import threading
+import time
 import typing
 import urllib.parse
 import webbrowser
@@ -12,6 +14,7 @@ from pathlib import Path
 from typing import Literal
 
 import config
+import lines
 
 IS_WINDOWS = os.name == "nt"
 MEMORY_FILE = Path(__file__).parent / "memory.json"
@@ -19,12 +22,66 @@ MEMORY_FILE = Path(__file__).parent / "memory.json"
 REGISTRY: dict[str, dict] = {}
 _PY_TO_JSON = {int: "integer", float: "number", str: "string", bool: "boolean"}
 _voice = None
-_timers: list[threading.Timer] = []
+_hub = None
+_timers: list[dict] = []          # {"id", "label", "end", "total", "timer"}
+_timer_lock = threading.Lock()
+_timer_ids = itertools.count(1)
+
+# Quick actions: when one of these succeeds, Vector confirms with a line from lines.py instead of
+# spending another model call (faster, and saves free-tier quota). Anything that returns
+# information (timers, system status...) still goes back to the model to be put into words.
+CONFIRM_ONLY = {"open_app", "open_website", "search_web", "change_volume", "set_volume",
+                "media_control", "remember_fact", "forget_fact", "cancel_timers"}
+_FAILURE_MARKERS = ("Error", "I don't know", "only works on", "must be between")
 
 
 def init(voice) -> None:
-    global _voice
+    global _voice, _hub
     _voice = voice
+    _hub = getattr(voice, "hub", None)
+
+
+def is_failure(result: str) -> bool:
+    return result.startswith(_FAILURE_MARKERS) or any(m in result for m in _FAILURE_MARKERS[1:])
+
+
+def _clock(seconds: int) -> str:
+    h, rem = divmod(max(0, int(seconds)), 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
+def label_for(name: str, raw_arguments: str) -> str:
+    """Short HUD caption for a tool call, e.g. 'OPENING CHROME'."""
+    try:
+        a = json.loads(raw_arguments) if raw_arguments else {}
+        if not isinstance(a, dict):
+            a = {}
+        text = {
+            "set_timer": lambda: f"TIMER SET {_clock(int(a.get('seconds', 0)))}",
+            "cancel_timers": lambda: "TIMERS CANCELLED",
+            "open_app": lambda: f"OPENING {str(a.get('name', '')).upper()}",
+            "open_website": lambda: f"OPENING {str(a.get('url', '')).upper()}",
+            "search_web": lambda: f"SEARCHING {str(a.get('site', 'google')).upper()}",
+            "change_volume": lambda: f"VOLUME {str(a.get('direction', '')).upper()}",
+            "set_volume": lambda: f"VOLUME {a.get('percent', '')}%",
+            "media_control": lambda: f"MEDIA {str(a.get('action', '')).replace('_', ' ').upper()}",
+            "get_system_status": lambda: "SYSTEM SCAN",
+            "remember_fact": lambda: "MEMORY UPDATED",
+            "forget_fact": lambda: "MEMORY CLEARED",
+        }[name]()
+    except Exception:
+        text = name.replace("_", " ").upper()
+    return text[:34]
+
+
+def _publish_timers() -> None:
+    """Send the running timers to the HUD (it counts them down itself from the end time)."""
+    if _hub:
+        with _timer_lock:
+            data = [{"id": e["id"], "label": e["label"], "end": e["end"], "total": e["total"]}
+                    for e in _timers]
+        _hub.emit(timers=data)
 
 
 def tool(fn):
@@ -105,24 +162,35 @@ def set_timer(seconds: int, label: str = "timer") -> str:
     if not 1 <= seconds <= 86400:
         return "A timer must be between 1 second and 24 hours."
 
-    def ring():
-        if _voice:
-            _voice.speak(f"Your {label} is done, {config.USER_TITLE}.", wait=False)
+    entry = {"id": next(_timer_ids), "label": label, "total": seconds,
+             "end": time.time() + seconds, "timer": None}
 
-    t = threading.Timer(seconds, ring)
-    t.daemon = True
-    t.start()
-    _timers.append(t)
+    def ring():
+        with _timer_lock:
+            if entry in _timers:
+                _timers.remove(entry)
+        _publish_timers()
+        if _voice:
+            _voice.speak(lines.pick("timer_done", label=label), wait=False)
+
+    entry["timer"] = threading.Timer(seconds, ring)
+    entry["timer"].daemon = True
+    with _timer_lock:
+        _timers.append(entry)
+    entry["timer"].start()
+    _publish_timers()
     return f"Timer '{label}' set for {_human_duration(seconds)}."
 
 
 @tool
 def cancel_timers() -> str:
     """Cancel every running timer and reminder."""
-    count = sum(1 for t in _timers if t.is_alive())
-    for t in _timers:
-        t.cancel()
-    _timers.clear()
+    with _timer_lock:
+        count = len(_timers)
+        for e in _timers:
+            e["timer"].cancel()
+        _timers.clear()
+    _publish_timers()
     return f"Cancelled {count} timer(s)."
 
 

@@ -72,3 +72,10 @@ UI_X = None            # window position on screen; None = let the OS choose
 UI_Y = None
 UI_AUTO_HIDE = True    # hide the orb when idle, pop it up on "Hey Vector" (False = always visible)
 UI_HIDE_AFTER = 6.0    # seconds of idle before it tucks away
+
+# ---- proactive lines (Vector speaks up by itself while idle) ----
+PROACTIVE_LINES = True        # False = Vector only ever talks when spoken to
+BREAK_REMINDER_MINUTES = 120  # nudge to take a break after this much continuous use (repeats)
+LOW_BATTERY_PERCENT = 20      # warn at or below this level while unplugged
+LATE_NIGHT_START_HOUR = 0     # "it's past 2 AM" check window, 24h clock: [start, end)
+LATE_NIGHT_END_HOUR = 5

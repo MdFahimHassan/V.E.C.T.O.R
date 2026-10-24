@@ -2,178 +2,447 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<title>V.E.C.T.O.R.</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>V.E.C.T.O.R. Orb</title>
 <style>
-  :root { --bg:#02050a; --cyan:#4fd8ff; --dim:#6b8797; }
-  html, body { margin:0; height:100%; background:var(--bg); overflow:hidden;
-    font-family: "Segoe UI", system-ui, sans-serif; color:var(--cyan); user-select:none; }
-  canvas { position:fixed; inset:0; width:100%; height:100%; }
-  #label { position:fixed; left:0; right:0; bottom:14px; text-align:center; padding:0 18px;
-    letter-spacing:.32em; font-size:11px; text-transform:uppercase; color:var(--dim); }
-  #caption { position:fixed; left:0; right:0; bottom:40px; text-align:center; padding:0 22px;
-    font-size:14px; line-height:1.45; color:#d6f4ff; opacity:0; transition:opacity .5s;
-    text-shadow:0 0 12px rgba(79,216,255,.45); }
-  #caption.you { color:#8fa9b6; text-shadow:none; }
-  #demo { position:fixed; top:10px; left:10px; display:none; gap:6px; flex-wrap:wrap; }
-  #demo button { background:#0a1822; color:var(--cyan); border:1px solid #1b3a4d; border-radius:6px;
-    padding:6px 10px; font:inherit; font-size:12px; cursor:pointer; }
-  #demo button:hover { border-color:var(--cyan); }
-  @media (prefers-reduced-motion: reduce) { #caption { transition:none; } }
+  :root {
+    --bg: #07060a;
+    --c: 255,157,46;            /* current accent, updated every frame from the state colour */
+    --alert: 255,77,46;
+    --mono: "Cascadia Mono", "Consolas", ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; user-select: none; cursor: default; }
+  body { font-family: var(--mono); color: rgba(var(--c), .9); }
+  canvas#c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+  /* ---- overlays: faint grid, scanlines, vignette ---- */
+  #fx { position: fixed; inset: 0; pointer-events: none; }
+  #fx .grid {
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(rgba(var(--c), .045) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(var(--c), .045) 1px, transparent 1px);
+    background-size: 48px 48px;
+    -webkit-mask-image: radial-gradient(ellipse at 50% 46%, #000 0%, transparent 72%);
+            mask-image: radial-gradient(ellipse at 50% 46%, #000 0%, transparent 72%);
+  }
+  #fx .scan { position: absolute; inset: 0; background: repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0, rgba(0,0,0,.16) 1px, transparent 1px, transparent 3px); }
+  #fx .vig  { position: absolute; inset: 0; background: radial-gradient(ellipse at 50% 46%, transparent 55%, rgba(0,0,0,.7) 100%); }
+
+  /* ---- corner brackets ---- */
+  .br { position: fixed; width: 34px; height: 34px; border: 0 solid rgba(var(--c), .85); pointer-events: none; }
+  .br.tl { top: 14px; left: 14px;  border-top-width: 2px; border-left-width: 2px; }
+  .br.tr { top: 14px; right: 14px; border-top-width: 2px; border-right-width: 2px; }
+  .br.bl { bottom: 14px; left: 14px;  border-bottom-width: 2px; border-left-width: 2px; }
+  .br.brr{ bottom: 14px; right: 14px; border-bottom-width: 2px; border-right-width: 2px; }
+
+  .hud { position: fixed; font-size: 12px; letter-spacing: .06em; }
+  .dim { color: rgba(var(--c), .5); }
+
+  /* ---- clock (top-left) ---- */
+  #clock { top: 32px; left: 36px; }
+  #clock .time { font-size: 26px; letter-spacing: .08em; color: rgba(var(--c), .95); }
+  #clock .date { margin-top: 4px; }
+
+  /* ---- system stats (top-right) ---- */
+  #stats { top: 32px; right: 36px; width: 190px; }
+  .stat { display: grid; grid-template-columns: 34px 1fr 40px; align-items: center; gap: 8px; margin-bottom: 7px; }
+  .stat .bar { height: 4px; background: rgba(var(--c), .15); position: relative; }
+  .stat .bar i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: rgba(var(--c), .9); transition: width .6s ease; }
+  .stat .val { text-align: right; color: rgba(var(--c), .95); }
+
+  /* ---- brain badge (top-centre) ---- */
+  #brain { top: 30px; left: 50%; transform: translateX(-50%); padding: 5px 12px; border: 1px solid rgba(var(--c), .35); background: rgba(7,6,10,.55); white-space: nowrap; }
+  #brain b { color: rgba(var(--c), 1); font-weight: 600; }
+
+  /* ---- panels (transcript, timers) ---- */
+  .panel { bottom: 36px; width: 290px; padding: 10px 12px 12px; border: 1px solid rgba(var(--c), .3); background: rgba(7,6,10,.6); }
+  .panel h4 { margin: 0 0 8px; font-size: 11px; font-weight: 600; letter-spacing: .18em; color: rgba(var(--c), .6); display: flex; justify-content: space-between; }
+  #log { left: 36px; }
+  #log .row { font-size: 12px; line-height: 1.45; margin-bottom: 5px; color: rgba(var(--c), .95); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  #log .who { color: rgba(var(--c), .55); margin-right: 6px; }
+  #log .empty, #timers .empty { color: rgba(var(--c), .35); }
+  #timers { right: 36px; }
+  .timer { margin-bottom: 9px; }
+  .timer .top { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
+  .timer .top .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 170px; color: rgba(var(--c), .8); }
+  .timer .top .left { font-size: 15px; color: rgba(var(--c), 1); }
+  .timer .bar { height: 3px; background: rgba(var(--c), .15); position: relative; }
+  .timer .bar i { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(var(--c), .9); }
+
+  /* ---- centre bottom: tool chip, caption, state label ---- */
+  #chip { position: fixed; left: 50%; bottom: 128px; transform: translateX(-50%); padding: 5px 14px; font-size: 12px; letter-spacing: .12em;
+          border: 1px solid rgba(var(--c), .75); background: rgba(var(--c), .12); color: rgba(var(--c), 1); opacity: 0; transition: opacity .25s; white-space: nowrap; }
+  #chip.show { opacity: 1; }
+  #chip.alert { border-color: rgba(var(--alert), .9); background: rgba(var(--alert), .15); color: rgb(var(--alert)); }
+  #caption { position: fixed; left: 340px; right: 340px; bottom: 62px; text-align: center; font-family: "Segoe UI", system-ui, sans-serif; font-size: 20px; line-height: 1.35;
+             color: rgba(var(--c), 1); opacity: 0; transition: opacity .4s; max-height: 2.8em; overflow: hidden; text-shadow: 0 0 14px rgba(var(--c), .45); }
+  #caption.show { opacity: 1; }
+  #caption.you { opacity: .6; font-size: 16px; }
+  #label { position: fixed; left: 0; right: 0; bottom: 30px; text-align: center; font-size: 12px; letter-spacing: .5em; color: rgba(var(--c), .6); }
+
+  /* ---- boot sequence ---- */
+  #boot { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: 13px; line-height: 1.9; letter-spacing: .12em;
+          color: rgba(var(--c), .95); transition: opacity .6s; white-space: pre; }
+  #boot.gone { opacity: 0; }
+  #boot .ok { color: rgba(var(--c), .55); }
+
+  /* ---- demo buttons (only when opened without Vector) ---- */
+  #demo { position: fixed; top: 100px; left: 36px; display: none; flex-direction: column; gap: 6px; }
+  #demo button { font: inherit; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: rgba(var(--c), .9); background: rgba(7,6,10,.6);
+                 border: 1px solid rgba(var(--c), .4); padding: 6px 12px; cursor: pointer; }
+  #demo button:hover { background: rgba(var(--c), .15); }
+
+  /* ---- glitch on state change ---- */
+  body.glitch #c { animation: gl .26s steps(2, end); }
+  body.glitch #label, body.glitch #caption { animation: gt .26s steps(2, end); }
+  @keyframes gl { 0% { transform: translate(0); } 25% { transform: translate(-5px, 1px); } 50% { transform: translate(6px, -1px); } 75% { transform: translate(-2px, 2px); } 100% { transform: none; } }
+  @keyframes gt { 0%, 100% { text-shadow: none; } 33% { text-shadow: 3px 0 rgba(var(--alert), .9), -3px 0 rgba(255,241,201,.8); } 66% { text-shadow: -2px 0 rgba(var(--alert), .9), 2px 0 rgba(255,241,201,.8); } }
+
+  /* ---- small floating window (UI_FULLSCREEN = False): keep only the essentials ---- */
+  @media (max-width: 820px), (max-height: 600px) {
+    #log, #timers, #brain, #demo, #stats { display: none; }
+    #clock { top: 22px; left: 26px; } #clock .time { font-size: 18px; }
+    #caption { left: 24px; right: 24px; font-size: 16px; bottom: 56px; }
+    #chip { bottom: 104px; }
+    .br { width: 22px; height: 22px; }
+  }
+  @media (prefers-reduced-motion: reduce) { body.glitch #c, body.glitch #label, body.glitch #caption { animation: none; } }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="demo"></div>
+<div id="fx"><div class="grid"></div><div class="scan"></div><div class="vig"></div></div>
+
+<div class="br tl"></div><div class="br tr"></div><div class="br bl"></div><div class="br brr"></div>
+
+<div id="clock" class="hud"><div class="time" id="time">--:--</div><div class="date dim" id="date"></div></div>
+
+<div id="stats" class="hud">
+  <div class="stat"><span class="dim">CPU</span><span class="bar"><i id="b-cpu"></i></span><span class="val" id="v-cpu">--</span></div>
+  <div class="stat"><span class="dim">RAM</span><span class="bar"><i id="b-ram"></i></span><span class="val" id="v-ram">--</span></div>
+  <div class="stat"><span class="dim">BAT</span><span class="bar"><i id="b-bat"></i></span><span class="val" id="v-bat">--</span></div>
+</div>
+
+<div id="brain" class="hud dim">BRAIN &middot; <b id="brain-name">STANDBY</b></div>
+
+<div id="demo">
+  <button data-s="idle">idle</button><button data-s="listening">listening</button>
+  <button data-s="thinking">thinking</button><button data-s="speaking">speaking</button>
+</div>
+
+<div id="log" class="hud panel"><h4><span>TRANSCRIPT</span></h4><div id="log-body"><div class="empty">no activity yet</div></div></div>
+<div id="timers" class="hud panel"><h4><span>TIMERS</span><span id="timer-count">0</span></h4><div id="timer-body"><div class="empty">no active timers</div></div></div>
+
+<div id="chip"></div>
 <div id="caption"></div>
 <div id="label">V.E.C.T.O.R.</div>
+<div id="boot"></div>
 
 <script>
-// ---------- state ----------
-const STATES = {
-  //            radius  spin   swirl  jitter  bright  size   hue(rgb)
-  idle:      { r:0.34, spin:0.10, swirl:0.0, jit:0.01, br:0.35, sz:0.9, col:[79,216,255] },
-  listening: { r:0.50, spin:0.25, swirl:0.0, jit:0.03, br:0.80, sz:1.2, col:[96,226,255] },
-  thinking:  { r:0.42, spin:1.30, swirl:3.2, jit:0.02, br:0.95, sz:1.15, col:[150,170,255] },
-  speaking:  { r:0.50, spin:0.35, swirl:0.0, jit:0.05, br:1.00, sz:1.3, col:[120,236,255] },
+(() => {
+"use strict";
+const TAU = Math.PI * 2;
+const params = new URLSearchParams(location.search);
+const PORT = params.get("port") || 8765;
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const root = document.documentElement;
+const $ = (id) => document.getElementById(id);
+
+/* ============ palette: Ember Gold ============ */
+const COL = {
+  idle:      [255, 157,  46],   // #ff9d2e
+  listening: [255, 179,  71],   // #ffb347
+  thinking:  [255,  94,  58],   // #ff5e3a
+  speaking:  [255, 241, 201],   // #fff1c9
 };
-const cur = { ...STATES.idle, col:[...STATES.idle.col] };
-let state = "idle", level = 0, smoothLevel = 0, micLevel = 0;
+const STATES = {
+  idle:      { r: .30, spin: .10, ring: 0, br: .45, sz: .9,  pulse: 0, jit: .010 },
+  listening: { r: .37, spin: .25, ring: 0, br: .85, sz: 1.2, pulse: 1, jit: .030 },
+  thinking:  { r: .33, spin: .70, ring: 1, br: 1.0, sz: 1.15, pulse: 0, jit: .020 },
+  speaking:  { r: .38, spin: .35, ring: 0, br: 1.0, sz: 1.3, pulse: 0, jit: .050 },
+};
+const LABEL = { idle: "V.E.C.T.O.R.", listening: "LISTENING", thinking: "THINKING", speaking: "SPEAKING" };
 
-// ---------- particles on a sphere ----------
-const N = 1500;
-const P = [];
-for (let i = 0; i < N; i++) {                       // fibonacci sphere = even spread
-  const y = 1 - (i / (N - 1)) * 2;
-  const rad = Math.sqrt(1 - y * y);
-  const th = Math.PI * (3 - Math.sqrt(5)) * i;
-  P.push({ x: Math.cos(th) * rad, y, z: Math.sin(th) * rad, seed: Math.random() * 6.28, k: 0.6 + Math.random() * 0.8 });
-}
+let state = "idle", level = 0, smoothLevel = 0;
+const cur = { ...STATES.idle, col: [...COL.idle] };
 
-const cv = document.getElementById("c"), ctx = cv.getContext("2d");
-let W = 0, H = 0, DPR = 1;
+/* ============ canvas + particles ============ */
+const cv = $("c"), ctx = cv.getContext("2d");
+let W = 0, H = 0;
 function resize() {
-  DPR = Math.min(2, window.devicePixelRatio || 1);
-  W = cv.clientWidth; H = cv.clientHeight;
-  cv.width = W * DPR; cv.height = H * DPR;
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const d = Math.min(2, devicePixelRatio || 1);
+  W = innerWidth; H = innerHeight;
+  cv.width = W * d; cv.height = H * d;
+  ctx.setTransform(d, 0, 0, d, 0, 0);
+  ctx.fillStyle = "#07060a"; ctx.fillRect(0, 0, W, H);
 }
 addEventListener("resize", resize); resize();
 
-const lerp = (a, b, t) => a + (b - a) * t;
-const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-let angle = 0, last = performance.now();
-function frame(now) {
-  const dt = Math.min(0.05, (now - last) / 1000); last = now;
-  const t = now / 1000;
-  const target = STATES[state];
-
-  // ease every parameter toward the current state so changes feel organic
-  const e = 1 - Math.pow(0.04, dt);
-  for (const k of ["r", "spin", "swirl", "jit", "br", "sz"]) cur[k] = lerp(cur[k], target[k], e);
-  for (let i = 0; i < 3; i++) cur.col[i] = lerp(cur.col[i], target.col[i], e);
-  smoothLevel = lerp(smoothLevel, level, 1 - Math.pow(0.0005, dt));
-
-  angle += dt * cur.spin * (reduce ? 0.3 : 1);
-  const minSide = Math.min(W, H * 0.86);
-  const cx = W / 2, cy = H * 0.46;
-  const base = minSide * cur.r * 0.5;
-  const breathe = 1 + 0.035 * Math.sin(t * (state === "idle" ? 1.1 : 2.2));
-  const voice = state === "speaking" ? smoothLevel : 0;
-
-  ctx.globalCompositeOperation = "source-over";
-  ctx.fillStyle = "rgba(2,5,10,0.28)";             // slight trail = soft motion blur
-  ctx.fillRect(0, 0, W, H);
-  ctx.globalCompositeOperation = "lighter";
-
-  // soft core glow
-  const glow = base * (1.5 + voice * 0.9);
-  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, glow);
-  const [cr, cg, cb] = cur.col.map(Math.round);
-  g.addColorStop(0, `rgba(${cr},${cg},${cb},${0.16 * cur.br + voice * 0.22})`);
-  g.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
-  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-
-  const cosA = Math.cos(angle), sinA = Math.sin(angle);
-  const tilt = 0.35, cosT = Math.cos(tilt), sinT = Math.sin(tilt);
-
-  for (let i = 0; i < N; i++) {
-    const p = P[i];
-    // twist by latitude while thinking -> particles stream into a swirl
-    const tw = cur.swirl * p.y * Math.sin(t * 0.8) + (cur.swirl ? t * 0.6 * p.k * (cur.swirl / 3.2) : 0);
-    const c = Math.cos(tw), s = Math.sin(tw);
-    let x = p.x * c - p.z * s, z = p.x * s + p.z * c, y = p.y;
-
-    // radial displacement: voice pushes particles outward, uneven per particle
-    const wob = Math.sin(t * 6 * p.k + p.seed * 3 + y * 4) * 0.5 + 0.5;
-    const rr = breathe * (1 + cur.jit * Math.sin(t * 2 + p.seed) + voice * 0.55 * wob);
-    x *= rr; y *= rr; z *= rr;
-
-    // spin around Y, then tilt around X
-    const x2 = x * cosA - z * sinA, z2 = x * sinA + z * cosA;
-    const y3 = y * cosT - z2 * sinT, z3 = y * sinT + z2 * cosT;
-
-    const persp = 1 / (1.9 - z3 * 0.55);
-    const px = cx + x2 * base * persp * 1.9, py = cy + y3 * base * persp * 1.9;
-    const depth = (z3 + 1) / 2;                     // 0 back .. 1 front
-    const a = (0.12 + depth * 0.7) * cur.br * (0.75 + 0.25 * wob);
-    const size = (0.5 + depth * 1.4) * cur.sz * (1 + voice * 0.8 * wob) * persp * 1.9;
-
-    ctx.fillStyle = `rgba(${cr},${cg},${cb},${a.toFixed(3)})`;
-    ctx.fillRect(px - size / 2, py - size / 2, size, size);
-  }
-  requestAnimationFrame(frame);
+const N = 1400, P = [];
+for (let i = 0; i < N; i++) {
+  const y = 1 - (i / (N - 1)) * 2, r = Math.sqrt(1 - y * y), th = Math.PI * (3 - Math.sqrt(5)) * i;
+  P.push({ x: Math.cos(th) * r, y, z: Math.sin(th) * r, s: Math.random() * TAU, k: .6 + Math.random() * .8, g: i % 3 });
 }
-requestAnimationFrame(frame);
 
-// Esc hides the orb window (only does anything inside the Vector window)
-addEventListener("keydown", e => { if (e.key === "Escape" && window.pywebview) window.pywebview.api.hide(); });
+/* mouse parallax */
+let mx = .5, my = .5, mxs = .5, mys = .5;
+addEventListener("mousemove", (e) => { mx = e.clientX / innerWidth; my = e.clientY / innerHeight; });
 
-// ---------- text under the orb ----------
-const cap = document.getElementById("caption"), label = document.getElementById("label");
-let capTimer;
+/* ============ boot sequence ============ */
+let bootK = 0, bootDone = false;
+const BOOT_LINES = [
+  "V.E.C.T.O.R.  //  BOOT",
+  "AUDIO INPUT ........ <span class='ok'>OK</span>",
+  "SPEECH MODEL ....... <span class='ok'>OK</span>",
+  "BRAIN LINK ......... <span class='ok'>OK</span>",
+  "ALL SYSTEMS ONLINE",
+];
+function runBoot() {
+  const el = $("boot");
+  if (reduceMotion || params.has("noboot")) { el.style.display = "none"; bootDone = true; return; }
+  let i = 0;
+  const step = () => {
+    if (i < BOOT_LINES.length) { el.innerHTML = BOOT_LINES.slice(0, ++i).join("\n"); setTimeout(step, 420); }
+    else setTimeout(() => { el.classList.add("gone"); bootDone = true; setTimeout(() => (el.style.display = "none"), 700); }, 500);
+  };
+  step();
+}
+
+/* ============ HUD: clock, stats, brain, log, timers, chip ============ */
+function tickClock() {
+  const d = new Date();
+  $("time").textContent = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  $("date").textContent = d.toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short" }).replace(",", "").toUpperCase();
+}
+tickClock(); setInterval(tickClock, 1000);
+
+function setStats(s) {
+  if (!s) return;
+  const set = (k, pct, text) => {
+    $("b-" + k).style.width = (pct == null ? 0 : Math.max(0, Math.min(100, pct))) + "%";
+    $("v-" + k).textContent = text;
+  };
+  set("cpu", s.cpu, s.cpu == null ? "--" : s.cpu + "%");
+  set("ram", s.ram, s.ram == null ? "--" : s.ram + "%");
+  if (s.bat == null) set("bat", 100, "AC");
+  else set("bat", s.bat, s.bat + "%" + (s.plugged ? "+" : ""));
+}
+function setBrain(name) { if (name) $("brain-name").textContent = String(name).toUpperCase(); }
+
+const logItems = [];
+function pushLog(who, text) {
+  if (!text) return;
+  const last = logItems[logItems.length - 1];
+  if (last && last.text === text && last.who === who) return;   // reconnect replay
+  logItems.push({ who, text });
+  while (logItems.length > 5) logItems.shift();
+  const body = $("log-body"); body.textContent = "";
+  logItems.forEach((it, i) => {
+    const row = document.createElement("div"); row.className = "row";
+    row.style.opacity = String(.4 + .6 * ((i + 1) / logItems.length));
+    const w = document.createElement("span"); w.className = "who"; w.textContent = it.who === "you" ? "YOU >" : "VECTOR >";
+    row.appendChild(w); row.appendChild(document.createTextNode(it.text));
+    body.appendChild(row);
+  });
+}
+
+let timers = [];
+function setTimers(list) { timers = Array.isArray(list) ? list : []; renderTimers(); }
+function fmt(sec) {
+  sec = Math.max(0, Math.ceil(sec)); const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+  const p = (n) => String(n).padStart(2, "0");
+  return h ? `${h}:${p(m)}:${p(s)}` : `${p(m)}:${p(s)}`;
+}
+function renderTimers() {
+  const body = $("timer-body"); body.textContent = "";
+  $("timer-count").textContent = String(timers.length);
+  if (!timers.length) { const e = document.createElement("div"); e.className = "empty"; e.textContent = "no active timers"; body.appendChild(e); return; }
+  const now = Date.now() / 1000;
+  timers.slice(0, 4).forEach((t) => {
+    const left = t.end - now, frac = t.total ? Math.max(0, Math.min(1, left / t.total)) : 0;
+    const box = document.createElement("div"); box.className = "timer";
+    const top = document.createElement("div"); top.className = "top";
+    const nm = document.createElement("span"); nm.className = "name"; nm.textContent = String(t.label || "timer").toUpperCase();
+    const lf = document.createElement("span"); lf.className = "left"; lf.textContent = fmt(left);
+    top.appendChild(nm); top.appendChild(lf);
+    const bar = document.createElement("div"); bar.className = "bar"; const i = document.createElement("i"); i.style.width = (frac * 100) + "%"; bar.appendChild(i);
+    box.appendChild(top); box.appendChild(bar); body.appendChild(box);
+  });
+}
+setInterval(() => { if (timers.length) renderTimers(); }, 250);
+
+let chipTimer = null;
+function showChip(text, alert) {
+  const chip = $("chip"); chip.textContent = "> " + text;
+  chip.classList.toggle("alert", !!alert); chip.classList.add("show");
+  clearTimeout(chipTimer); chipTimer = setTimeout(() => chip.classList.remove("show"), 3500);
+}
+
+let capTimer = null;
 function caption(text, who) {
-  cap.textContent = text;
-  cap.className = who === "you" ? "you" : "";
-  cap.style.opacity = text ? 1 : 0;
-  clearTimeout(capTimer);
-  if (text) capTimer = setTimeout(() => (cap.style.opacity = 0), 7000);
+  const el = $("caption");
+  if (!text) { el.classList.remove("show"); return; }
+  el.textContent = text; el.className = "show" + (who === "you" ? " you" : "");
+  clearTimeout(capTimer); capTimer = setTimeout(() => el.classList.remove("show"), 6000);
 }
-function setState(s) { if (STATES[s]) { state = s; label.textContent = s === "idle" ? "V.E.C.T.O.R." : s; } }
 
-// ---------- events from vector.py ----------
+let glitchTimer = null;
+function glitch() {
+  if (reduceMotion || !bootDone) return;
+  document.body.classList.add("glitch");
+  clearTimeout(glitchTimer); glitchTimer = setTimeout(() => document.body.classList.remove("glitch"), 280);
+}
+function setState(s) {
+  if (!STATES[s] || s === state) return;
+  state = s; $("label").textContent = LABEL[s]; glitch();
+}
+
+/* ============ events from Vector ============ */
 function handle(m) {
   if (m.state) setState(m.state);
   if (typeof m.level === "number") level = m.level;
-  if (m.text !== undefined && m.text !== null) caption(m.text, m.who);
+  if (m.text !== undefined && m.text !== null) { caption(m.text, m.who); if (m.text) pushLog(m.who, m.text); }
+  if (m.stats) setStats(m.stats);
+  if (m.timers) setTimers(m.timers);
+  if (m.brain) setBrain(m.brain);
+  if (m.tool) showChip(m.tool, m.alert);
 }
-
-const port = new URLSearchParams(location.search).get("port") || "8765";
-let demoStarted = false;
+let ws = null, demo = false;
 function connect() {
-  let ws;
-  try { ws = new WebSocket(`ws://127.0.0.1:${port}`); } catch { return startDemo(); }
-  ws.onmessage = ev => { try { handle(JSON.parse(ev.data)); } catch {} };
-  ws.onopen = () => { document.getElementById("demo").style.display = "none"; };
-  ws.onclose = () => { setTimeout(connect, 1500); if (!demoStarted) setTimeout(startDemo, 1200); };
+  try { ws = new WebSocket("ws://127.0.0.1:" + PORT); } catch (e) { startDemo(); return; }
+  let opened = false;
+  ws.onopen = () => { opened = true; demo = false; $("demo").style.display = "none"; };
+  ws.onmessage = (ev) => { try { handle(JSON.parse(ev.data)); } catch (e) {} };
+  ws.onclose = () => { if (!opened) startDemo(); setTimeout(connect, 2000); };
+  ws.onerror = () => {};
 }
-connect();
+function startDemo() {            // orb.html opened by itself: show it off with fake data
+  if (demo) return; demo = true;
+  $("demo").style.display = "flex";
+  handle({ stats: { cpu: 23, ram: 61, bat: 81, plugged: false }, brain: "gemini",
+           timers: [{ id: 1, label: "pasta", end: Date.now() / 1000 + 540, total: 600 }] });
+  setInterval(() => { if (demo) setStats({ cpu: 15 + Math.round(Math.random() * 40), ram: 58 + Math.round(Math.random() * 6), bat: 81, plugged: false }); }, 2000);
+}
+document.querySelectorAll("#demo button").forEach((b) => b.addEventListener("click", () => {
+  const s = b.dataset.s; handle({ state: s });
+  if (s === "listening") handle({ text: "Hey Vector, open Chrome", who: "you" });
+  if (s === "thinking") handle({ tool: "OPENING CHROME" });
+  if (s === "speaking") { handle({ text: "Done, sir.", who: "vector" }); }
+}));
+setInterval(() => { if (demo && state === "speaking") level = .4 + Math.random() * .5; else if (demo) level = 0; }, 60);
+addEventListener("keydown", (e) => { if (e.key === "Escape" && window.pywebview?.api?.hide) window.pywebview.api.hide(); });
 
-// ---------- demo mode: only when Vector isn't running ----------
-function startDemo() {
-  if (demoStarted) return; demoStarted = true;
-  const box = document.getElementById("demo"); box.style.display = "flex";
-  const sim = { talking: false };
-  for (const s of Object.keys(STATES)) {
-    const b = document.createElement("button"); b.textContent = s;
-    b.onclick = () => { sim.talking = s === "speaking"; setState(s);
-      if (s === "speaking") caption("Good morning, sir. All systems are running normally.", "vector");
-      if (s === "listening") caption("Set a timer for ten minutes", "you"); };
-    box.appendChild(b);
+/* ============ render loop ============ */
+let angle = 0, last = performance.now(), lastCs = "";
+const lerp = (a, b, t) => a + (b - a) * t;
+
+function frame(now) {
+  const dt = Math.min(.05, (now - last) / 1000); last = now;
+  const t = now / 1000, e = 1 - Math.pow(.04, dt);
+
+  const tg = STATES[state];
+  for (const k of ["r", "spin", "ring", "br", "sz", "pulse", "jit"]) cur[k] = lerp(cur[k], tg[k], e);
+  for (let i = 0; i < 3; i++) cur.col[i] = lerp(cur.col[i], COL[state][i], e);
+  smoothLevel = lerp(smoothLevel, level, 1 - Math.pow(.0005, dt));
+  bootK = lerp(bootK, bootDone ? 1 : 0, 1 - Math.pow(.25, dt));
+  mxs = lerp(mxs, mx, 1 - Math.pow(.05, dt)); mys = lerp(mys, my, 1 - Math.pow(.05, dt));
+  angle += dt * cur.spin * (reduceMotion ? .3 : 1);
+
+  const cr = Math.round(cur.col[0]), cg = Math.round(cur.col[1]), cb = Math.round(cur.col[2]);
+  const cs = cr + "," + cg + "," + cb;
+  if (cs !== lastCs) { root.style.setProperty("--c", cs); lastCs = cs; }
+  const rgba = (a) => `rgba(${cr},${cg},${cb},${a})`;
+  const br = cur.br * (.15 + .85 * bootK);
+  const voice = state === "speaking" ? smoothLevel : 0;
+
+  const u = Math.min(W, H * .82);
+  const cx = W / 2 + (mxs - .5) * 16, cy = H * .46 + (mys - .5) * 10;
+  const base = u * cur.r * .5, R = base * 1.45;
+
+  // fade previous frame (gives particles a short trail)
+  ctx.globalCompositeOperation = "source-over";
+  ctx.fillStyle = "rgba(7,6,10,.3)"; ctx.fillRect(0, 0, W, H);
+  ctx.globalCompositeOperation = "lighter";
+
+  // ---- HUD rings around the orb ----
+  ctx.lineWidth = 1; ctx.strokeStyle = rgba(.35 * br); ctx.setLineDash([3, 7]);
+  ctx.beginPath(); ctx.arc(cx, cy, R * 1.28, t * .3, t * .3 + TAU); ctx.stroke(); ctx.setLineDash([]);
+
+  ctx.lineWidth = 2; ctx.strokeStyle = rgba(.75 * br);
+  const arcSpeed = state === "thinking" ? 1.6 : .6;
+  for (let k = 0; k < 3; k++) { const a0 = -t * arcSpeed + k * 2.094; ctx.beginPath(); ctx.arc(cx, cy, R * 1.45, a0, a0 + .9); ctx.stroke(); }
+
+  ctx.lineWidth = 1; ctx.strokeStyle = rgba(.2 * br);
+  ctx.beginPath(); ctx.arc(cx, cy, R * 1.62, 0, TAU); ctx.stroke();
+
+  if (cur.pulse > .02) {                      // listening: ripples flowing outwards
+    for (let k = 0; k < 2; k++) {
+      const ph = (t * .7 + k * .5) % 1;
+      ctx.strokeStyle = rgba((1 - ph) * .4 * cur.pulse);
+      ctx.beginPath(); ctx.arc(cx, cy, R * (1 + ph * .62), 0, TAU); ctx.stroke();
+    }
   }
-  setInterval(() => { if (sim.talking) level = Math.max(0, Math.min(1, 0.35 + 0.3 * Math.sin(performance.now() / 90) + (Math.random() - 0.5) * 0.35)); else level = 0; }, 40);
+
+  // ---- radial voice spectrum ----
+  const bars = 72; ctx.lineWidth = 2;
+  for (let i = 0; i < bars; i++) {
+    const a = i / bars * TAU + angle * .2;
+    const n = .5 + .5 * Math.sin(t * 7 + i * 1.7) * Math.sin(t * 3.1 + i * .6);
+    const len = 3 + voice * R * .32 * n + cur.pulse * 4 * n;
+    const r0 = R * 1.62 + 3;
+    ctx.strokeStyle = rgba(Math.min(1, (.25 + .6 * (voice * n + .2)) * br));
+    ctx.beginPath(); ctx.moveTo(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0);
+    ctx.lineTo(cx + Math.cos(a) * (r0 + len), cy + Math.sin(a) * (r0 + len)); ctx.stroke();
+  }
+
+  // ---- soft core glow ----
+  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 1.3);
+  g.addColorStop(0, rgba(.2 * br + voice * .2)); g.addColorStop(1, rgba(0));
+  ctx.fillStyle = g; ctx.fillRect(cx - R * 1.4, cy - R * 1.4, R * 2.8, R * 2.8);
+
+  // ---- particles: sphere that morphs into two orbiting rings while thinking ----
+  const tilt = .35 + (mys - .5) * .25, cT = Math.cos(tilt), sT = Math.sin(tilt);
+  const rot = angle + (mxs - .5) * .35, cA = Math.cos(rot), sA = Math.sin(rot);
+  const m = cur.ring, breathe = 1 + .035 * Math.sin(t * (state === "idle" ? 1.1 : 2.2));
+  for (let i = 0; i < N; i++) {
+    const q = P[i];
+    let x = q.x, y = q.y, z = q.z;
+    if (m > .001) {
+      if (q.g === 0) {                         // ring A: equator
+        const a = q.s + t * 1.1 * q.k;
+        x = lerp(x, Math.cos(a) * 1.3, m); y = lerp(y, Math.sin(a * 3 + t) * .05, m); z = lerp(z, Math.sin(a) * 1.3, m);
+      } else if (q.g === 1) {                  // ring B: tilted, opposite direction
+        const a = q.s - t * 1.6 * q.k;
+        x = lerp(x, Math.cos(a) * 1.05, m); y = lerp(y, Math.sin(a) * .47, m); z = lerp(z, Math.sin(a) * .95, m);
+      } else {                                 // the rest shrink into a core
+        const k = lerp(1, .55, m); x *= k; y *= k; z *= k;
+      }
+    }
+    const wob = Math.sin(t * 6 * q.k + q.s * 3 + y * 4) * .5 + .5;
+    const rr = breathe * (1 + voice * .5 * wob + cur.jit * wob);
+    x *= rr; y *= rr; z *= rr;
+    const x2 = x * cA - z * sA, z2 = x * sA + z * cA;
+    const y3 = y * cT - z2 * sT, z3 = y * sT + z2 * cT;
+    const ps = 1 / (1.9 - z3 * .55);
+    const px = cx + x2 * base * ps * 1.9, py = cy + y3 * base * ps * 1.9, d = (z3 + 1) / 2;
+    const a = (.12 + d * .75) * br;
+    const sz = (.6 + d * 1.5) * ps * 1.9 * cur.sz * (1 + voice * .6 * wob) * Math.max(.7, u / 900 + .5);
+    ctx.fillStyle = rgba(a.toFixed(3));
+    ctx.fillRect(px - sz / 2, py - sz / 2, sz, sz);
+  }
+  ctx.globalCompositeOperation = "source-over";
+  requestAnimationFrame(frame);
 }
+
+/* ============ go ============ */
+setStats({ cpu: null, ram: null, bat: null });
+$("v-bat").textContent = "--"; $("b-bat").style.width = "0%";
+runBoot();
+connect();
+requestAnimationFrame(frame);
+})();
 </script>
 </body>
 </html>

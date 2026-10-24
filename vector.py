@@ -1,13 +1,19 @@
 import argparse
+import json
 import re
+import threading
 import time
+from datetime import date, datetime
+from pathlib import Path
 
 import config
+import lines
 import tools
 from brain import Brain
 from ui import Hub, open_orb
 from voice import Voice
 
+STATE_FILE = Path(__file__).parent / "state.json"
 EXIT_PHRASES = {"exit", "quit", "goodbye", "goodbye vector", "shut down", "shut down vector", "go to sleep"}
 WAKE_PATTERN = re.compile(r"^\W*(?:(?:hey|hi|hello|okay|ok)\W+)?(\w+)\W*(.*)$", re.IGNORECASE | re.DOTALL)
 
@@ -37,7 +43,7 @@ def next_command(ear, voice, hub, follow_up_until: float, require_wake: bool):
     heard, command = split_wake_word(text)
     if heard and not command:
         hub.emit(state="listening")
-        voice.speak(f"Yes, {config.USER_TITLE}?")
+        voice.speak(lines.pick("wake"))
         hub.emit(state="listening", text=None)
         audio = ear.record_utterance(max_wait=config.WAIT_FOR_SPEECH_SECONDS)
         return ear.transcribe(audio) if audio is not None else None
@@ -45,6 +51,59 @@ def next_command(ear, voice, hub, follow_up_until: float, require_wake: bool):
         return command
     print(f"[ignored] {text}")
     return None
+
+
+def first_launch_today() -> bool:
+    """True the first time Vector starts on a given date (remembered in state.json)."""
+    today = date.today().isoformat()
+    try:
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {}
+    first = data.get("last_launch") != today
+    data["last_launch"] = today
+    try:
+        STATE_FILE.write_text(json.dumps(data), encoding="utf-8")
+    except OSError:
+        pass
+    return first
+
+
+def monitor(voice, hub) -> None:
+    """Background watcher: low battery, late night and break reminders, said only when idle."""
+    started = time.monotonic()
+    next_break = config.BREAK_REMINDER_MINUTES * 60
+    late_night_done = False
+    battery_warned = False
+    while True:
+        time.sleep(30)
+        if hub.state in ("thinking", "speaking") or voice.is_speaking:
+            continue
+
+        try:
+            import psutil
+            battery = psutil.sensors_battery()
+        except Exception:
+            battery = None
+        if battery:
+            if battery.power_plugged or battery.percent > config.LOW_BATTERY_PERCENT + 10:
+                battery_warned = False
+            elif battery.percent <= config.LOW_BATTERY_PERCENT and not battery_warned:
+                battery_warned = True
+                voice.speak(lines.pick("low_battery", percent=round(battery.percent)), wait=False)
+                continue
+
+        hour = datetime.now().hour
+        if (not late_night_done
+                and config.LATE_NIGHT_START_HOUR <= hour < config.LATE_NIGHT_END_HOUR):
+            late_night_done = True
+            voice.speak(lines.pick("late_night", hour=lines.hour_phrase(hour)), wait=False)
+            continue
+
+        elapsed = time.monotonic() - started
+        if elapsed >= next_break:
+            next_break += config.BREAK_REMINDER_MINUTES * 60
+            voice.speak(lines.pick("break_nudge", hours=lines.duration_phrase(elapsed)), wait=False)
 
 
 def main() -> None:
@@ -71,7 +130,7 @@ def main() -> None:
 def run(args, hub: Hub) -> None:
     voice = Voice(hub)
     tools.init(voice)
-    brain = Brain()
+    brain = Brain(hub)
 
     ear = None
     if not args.text:
@@ -80,9 +139,11 @@ def run(args, hub: Hub) -> None:
         ear.calibrate()
 
     hub.emit(state="speaking")
-    voice.speak(f"Vector online, {config.USER_TITLE}.")
+    voice.speak(lines.startup_line(first_launch_today()))
     hub.emit(state="idle")
     follow_up_until = 0.0
+    if config.PROACTIVE_LINES:
+        threading.Thread(target=monitor, args=(voice, hub), daemon=True).start()
 
     try:
         while True:
@@ -100,7 +161,7 @@ def run(args, hub: Hub) -> None:
             hub.emit(state="thinking", text=text, who="you")
 
             if is_exit(text):
-                voice.speak(f"Goodbye, {config.USER_TITLE}.")
+                voice.speak(lines.pick("shutdown"))
                 break
 
             started = time.monotonic()

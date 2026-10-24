@@ -1,6 +1,6 @@
 """Orb interface plumbing.
 
-Hub      - the rest of Vector calls hub.emit(state=..., level=..., text=...). Safe to call even
+Hub      - the rest of Vector calls hub.emit(state=..., level=..., text=..., tool=..., timers=...). Safe to call even
            when no UI is running (it just does nothing).
 Server   - tiny local WebSocket server that pushes those events to orb.html.
 open_orb - shows orb.html in its own frameless window (pywebview) or, failing that, a browser tab.
@@ -10,6 +10,7 @@ States: idle | listening | thinking | speaking
 import asyncio
 import json
 import threading
+import time
 import webbrowser
 from pathlib import Path
 
@@ -17,12 +18,15 @@ import config
 
 ORB_FILE = Path(__file__).parent / "orb.html"
 
+# one-off events that must not be replayed to a UI that connects later
+TRANSIENT = {"tool", "alert"}
+
 
 class Hub:
     def __init__(self):
         self._loop = None
         self._clients = set()
-        self._last = {"state": "idle", "level": 0.0, "text": "", "who": ""}
+        self._last = {"state": "idle", "level": 0.0, "text": "", "who": "", "timers": [], "stats": None, "brain": ""}
         self.on_state = None  # optional callback, used to show/hide the window
 
     @property
@@ -36,7 +40,8 @@ class Hub:
                 self.on_state(event["state"])
             except Exception:
                 pass
-        self._last.update({k: v for k, v in event.items() if k != "text" or v is not None})
+        self._last.update({k: v for k, v in event.items()
+                           if k not in TRANSIENT and (k != "text" or v is not None)})
         if self._loop is None:
             return
         message = json.dumps({k: (round(v, 3) if isinstance(v, float) else v) for k, v in event.items()})
@@ -58,6 +63,27 @@ class Hub:
         ready = threading.Event()
         threading.Thread(target=self._run, args=(ready,), daemon=True).start()
         ready.wait(timeout=5)
+        threading.Thread(target=self._stats_loop, daemon=True).start()
+
+    def _stats_loop(self) -> None:
+        """Push CPU / RAM / battery to the HUD every couple of seconds."""
+        try:
+            import psutil
+        except ImportError:
+            return
+        psutil.cpu_percent(None)  # the first call always returns 0
+        while True:
+            time.sleep(2)
+            try:
+                battery = psutil.sensors_battery()
+                self.emit(stats={
+                    "cpu": round(psutil.cpu_percent(None)),
+                    "ram": round(psutil.virtual_memory().percent),
+                    "bat": round(battery.percent) if battery else None,
+                    "plugged": bool(battery.power_plugged) if battery else None,
+                })
+            except Exception:
+                pass
 
     def _run(self, ready: threading.Event) -> None:
         from websockets.asyncio.server import serve
@@ -102,7 +128,7 @@ def open_orb(hub: Hub, run_in_background) -> None:
     window = webview.create_window(
         "V.E.C.T.O.R.", str(ORB_FILE), js_api=Api(),
         fullscreen=config.UI_FULLSCREEN, width=config.UI_SIZE, height=config.UI_SIZE + 80,
-        frameless=True, easy_drag=not config.UI_FULLSCREEN, on_top=True, background_color="#02050a",
+        frameless=True, easy_drag=not config.UI_FULLSCREEN, on_top=True, background_color="#07060a",
         x=config.UI_X, y=config.UI_Y,
     )
 

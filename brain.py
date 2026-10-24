@@ -4,11 +4,13 @@ from datetime import datetime
 from openai import APIConnectionError, OpenAI, OpenAIError, RateLimitError
 
 import config
+import lines
 import tools
 
 
 class Brain:
-    def __init__(self):
+    def __init__(self, hub=None):
+        self.hub = hub
         self.providers = []
         for name in config.BRAIN_ORDER:
             cfg = config.PROVIDERS.get(name)
@@ -76,6 +78,8 @@ class Brain:
                     tools=tools.schemas(), tool_choice="auto", temperature=0.4,
                 )
                 self.last_provider = p["label"]
+                if self.hub:
+                    self.hub.emit(brain=p["label"])
                 return reply
             except OpenAIError as e:
                 if isinstance(e, RateLimitError):
@@ -101,6 +105,7 @@ class Brain:
         messages.append({"role": "user", "content": user_text})
 
         reply = ""
+        any_failed = False
         try:
             for _ in range(config.MAX_TOOL_ROUNDS):
                 started = time.monotonic()
@@ -116,17 +121,31 @@ class Brain:
                     "content": msg.content or "",
                     "tool_calls": [self._tool_call_dict(c) for c in msg.tool_calls],
                 })
+                round_ok_quick = True
                 for call in msg.tool_calls:
-                    result = tools.run_tool(call.function.name, call.function.arguments)
-                    print(f"[tool] {call.function.name}({call.function.arguments}) -> {result}")
+                    name, raw = call.function.name, call.function.arguments
+                    if self.hub:
+                        self.hub.emit(tool=tools.label_for(name, raw))
+                    result = tools.run_tool(name, raw)
+                    failed = tools.is_failure(result)
+                    any_failed = any_failed or failed
+                    if failed and self.hub:
+                        self.hub.emit(tool=tools.label_for(name, raw), alert=True)
+                    round_ok_quick = round_ok_quick and (not failed) and name in tools.CONFIRM_ONLY
+                    print(f"[tool] {name}({raw}) -> {result}")
                     messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+
+                if round_ok_quick:
+                    # simple action went through: confirm with a shuffled line, skip another model call
+                    reply = lines.pick("done")
+                    break
             else:
                 reply = f"That took too many steps, {config.USER_TITLE}. Could you simplify the request?"
         except RuntimeError as e:
             print(f"[Brain] {e}")
-            return f"I can't reach my brain right now, {config.USER_TITLE}."
+            return lines.pick("offline")
 
-        reply = reply or f"Done, {config.USER_TITLE}."
+        reply = reply or (lines.pick("fail") if any_failed else lines.pick("done"))
         self.history += [{"role": "user", "content": user_text},
                          {"role": "assistant", "content": reply}]
         self.history = self.history[-2 * config.HISTORY_TURNS:]
